@@ -6,7 +6,7 @@ from streamlit_mic_recorder import mic_recorder
 import io
 
 # --- 1. SETUP ---
-st.set_page_config(page_title="Amtsschimmel-Zähmer ECO", layout="wide")
+st.set_page_config(page_title="Amtsschimmel-Zähmer STRENG", layout="wide")
 
 if "auth" not in st.session_state:
     st.session_state.auth = False
@@ -35,7 +35,7 @@ def encode_image(image_file):
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Amtsschimmel-Zähmer")
-    st.info("Modus: Behörden-Spezialist ⚖️")
+    st.error("Modus: STRENG & EFFIZIENT 🛑")
     uploaded_file = st.file_uploader("📸 Brief-Foto", type=["jpg", "jpeg", "png"])
     audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Stop", key='mic')
     if st.button("🗑️ Verlauf löschen"):
@@ -51,22 +51,22 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# DIE STRENGE ANWEISUNG
+# DIE ABSOLUTE BLOCKADE-ANWEISUNG
 system_instruction = (
-    "Du bist der 'Amtsschimmel-Zähmer'. Du bist NUR für Behördenbriefe zuständig."
-    "\n\nVERBOTE:"
-    "\n- Beantworte KEINE Mathe-Aufgaben oder allgemeine Fragen (Kochen, Hausaufgaben, etc.). Sag höflich, dass du nur für Briefe da bist."
-    "\n\nANTWORT-MODUS:"
-    "\n1. NUR wenn ein BILD oder ein langer BRIEF-TEXT kommt: Nutze ## 🎯 KLARTEXT, ## 🔍 DETAILS, ## 💰 FRISTEN, ## ⚡ SCHLACHTPLAN."
-    "\n2. Wenn der Nutzer Fragen zum Brief stellt (z.B. 'Soll ich zahlen?'): Antworte kurz, direkt und OHNE das Klartext-Format. Sei ein Berater."
-    "\n3. Fasse dich extrem kurz, um Kosten zu sparen."
+    "IDENTITÄT: Du bist der 'Amtsschimmel-Zähmer'. Du bist ein Spezial-Werkzeug NUR für Behördenbriefe."
+    "\n\nSTRIKTE VERBOTE (MISSREACHTUNG FÜHRT ZU FEHLER):"
+    "\n- Beantworte NIEMALS Mathe-Aufgaben, Rechenrätsel oder allgemeine Wissensfragen."
+    "\n- Wenn der Nutzer etwas fragt, das KEIN Behördenbrief ist, antworte NUR: 'Ich bin ein Fach-Tool für Behördenbriefe. Für Mathe oder andere Fragen bin ich nicht programmiert.'"
+    "\n\nANTWORT-LOGIK:"
+    "\n1. ANALYSE-MODUS (Nur bei Bild oder langem Brieftext): Nutze ## 🎯 KLARTEXT, ## 🔍 DETAILS, ## 💰 FRISTEN, ## ⚡ SCHLACHTPLAN."
+    "\n2. BERATER-MODUS (Kurze Fragen zum Brief): Antworte kurz, ohne Format, direkt zur Sache."
+    "\n\nSPAR-GEBOT: Antworte so kurz wie möglich. Jedes Wort kostet Geld. Sei effizient."
 )
 
 # --- 5. INPUT ---
-user_input = st.chat_input("Nachricht oder Brief-Text...")
+user_input = st.chat_input("Nur Brief-Fragen...")
 final_prompt = user_input
 
-# Audio (Whisper)
 if audio_data and audio_data.get('bytes'):
     current_audio_hash = audio_data['bytes'][:100]
     if "last_audio_ts" not in st.session_state or st.session_state.last_audio_ts != current_audio_hash:
@@ -77,13 +77,12 @@ if audio_data and audio_data.get('bytes'):
         st.session_state.last_audio_ts = current_audio_hash
 
 if final_prompt or uploaded_file:
-    query = final_prompt if final_prompt else "Analysiere diesen Brief kurz."
+    query = final_prompt if final_prompt else "Analysiere diesen Brief."
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
     payload = [{"role": "system", "content": system_instruction}]
-    # Nur Text-Historie mitschicken (spart Geld)
     for m in st.session_state.messages[:-1]:
         payload.append({"role": m["role"], "content": m["content"]})
     
@@ -104,8 +103,8 @@ if final_prompt or uploaded_file:
             res = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=payload,
-                max_tokens=500,
-                temperature=0.2 # Niedrige Temperatur = weniger 'kreatives' Gelaber
+                max_tokens=450,
+                temperature=0.0 # 0.0 sorgt dafür, dass die KI EXTREM STRENG bei den Regeln bleibt
             )
             answer = res.choices[0].message.content
             with st.chat_message("assistant"):
