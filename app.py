@@ -5,8 +5,8 @@ import base64
 from streamlit_mic_recorder import mic_recorder
 import io
 
-# --- 1. INITIALISIERUNG ---
-st.set_page_config(page_title="Amtsschimmel-Zähmer v3", layout="wide")
+# --- 1. SETUP ---
+st.set_page_config(page_title="Amtsschimmel-Zähmer", layout="wide")
 
 try:
     GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
@@ -26,7 +26,6 @@ def encode_image(image_file):
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Behörden-Killer")
-    st.info("Aktueller Status: Online 🟢")
     uploaded_file = st.file_uploader("📸 Brief hochladen", type=["jpg", "jpeg", "png"])
     audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Fertig", key='sidebar_mic')
     if st.button("🗑️ Verlauf löschen"):
@@ -43,14 +42,13 @@ for msg in st.session_state.messages:
 
 # --- 5. SYSTEM PROMPT ---
 system_instruction = (
-    "Du bist der 'Amtsschimmel-Zähmer'. Deine Aufgabe: Analysiere den Brief auf dem Bild VOLLSTÄNDIG. "
+    "Du bist der 'Amtsschimmel-Zähmer'. Analysiere den Brief auf dem Bild VOLLSTÄNDIG. "
     "Gib klare Befehle. Struktur: 🎯 KLARTEXT, 💰 FAKTEN, ⚡ SCHLACHTPLAN."
 )
 
 # --- 6. INPUT-VERARBEITUNG ---
 user_text = st.chat_input("Frag mich was...")
 
-# Audio-Check (Whisper ist stabil)
 audio_prompt = None
 if audio_data:
     audio_bio = io.BytesIO(audio_data['bytes'])
@@ -68,17 +66,12 @@ if final_input or uploaded_file:
     with st.chat_message("user"):
         st.markdown(final_input)
 
-    # --- MODEL CHECK (AKTUELLSTE VERSIONEN) ---
-    # Wir probieren das stärkste verfügbare Vision Modell
-    # Falls 'llama-3.2-90b-vision-preview' weg ist, ist 'llama-3.2-11b-vision-preview' meist noch da.
-    # Als Backup nutzen wir das universelle 'llama-3.3-70b-versatile' für reinen Text.
-    
+    # --- MODEL AUSWAHL (FIXED) ---
     if uploaded_file:
-        model_to_use = "llama-3.2-11b-vision-preview" # Das stabilste kleine Vision Modell
+        selected_model = "llama-3.2-11b-vision-preview"
     else:
-        model_to_use = "llama-3.3-70b-versatile" # Das aktuellste Text-Modell
+        selected_model = "llama-3.3-70b-versatile"
     
-    # Payload
     messages_payload = [{"role": "system", "content": system_instruction}]
     for m in st.session_state.messages[:-1]:
         messages_payload.append({"role": m["role"], "content": m["content"]})
@@ -95,19 +88,19 @@ if final_input or uploaded_file:
     else:
         messages_payload.append({"role": "user", "content": final_input})
 
-    with st.spinner(f"🤖 Analysiere mit {model_to_use}..."):
+    with st.spinner(f"🤖 Analysiere..."):
         try:
-            res = client.chat.completions.create(model=model_name, messages=messages_payload)
+            # Hier war der Fehler: selected_model statt model_name
+            res = client.chat.completions.create(model=selected_model, messages=messages_payload)
             ai_text = res.choices[0].message.content
+            
             with st.chat_message("assistant"):
                 st.markdown(ai_text)
             st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
-            # DB Speicher
             try:
                 supabase.table("brief_summaries").insert({"summary_text": ai_text[:300]}).execute()
             except: pass
             
         except Exception as e:
-            st.error(f"Modell-Fehler: {e}")
-            st.info("Tipp: Wenn das Modell 'decommissioned' ist, muss der Name im Code kurz angepasst werden. Groq ändert die Namen oft minimal.")
+            st.error(f"Fehler: {e}")
