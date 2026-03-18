@@ -34,8 +34,8 @@ def encode_image(image_file):
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
-    st.title("🛡️ ECO-Zähmer")
-    st.warning("Spar-Modus: MAXIMAL 🍃")
+    st.title("🛡️ Amtsschimmel-Zähmer")
+    st.info("Modus: Behörden-Spezialist ⚖️")
     uploaded_file = st.file_uploader("📸 Brief-Foto", type=["jpg", "jpeg", "png"])
     audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Stop", key='mic')
     if st.button("🗑️ Verlauf löschen"):
@@ -43,7 +43,7 @@ with st.sidebar:
         st.session_state.last_audio_ts = None
         st.rerun()
 
-# --- 4. CHAT-LOGIK ---
+# --- 4. CHAT-LOGIK & EISERNE REGELN ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -51,18 +51,22 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+# DIE STRENGE ANWEISUNG
 system_instruction = (
-    "Du bist ein sparsamer Assistent für Behördenbriefe. "
-    "Fasse dich kurz! Nur wenn ein Brief/Text kommt, nutze: "
-    "🎯KLARTEXT, 🔍DETAILS, 💰FRISTEN, ⚡PLAN. "
-    "Bei Fragen antworte in max. 2-3 Sätzen."
+    "Du bist der 'Amtsschimmel-Zähmer'. Du bist NUR für Behördenbriefe zuständig."
+    "\n\nVERBOTE:"
+    "\n- Beantworte KEINE Mathe-Aufgaben oder allgemeine Fragen (Kochen, Hausaufgaben, etc.). Sag höflich, dass du nur für Briefe da bist."
+    "\n\nANTWORT-MODUS:"
+    "\n1. NUR wenn ein BILD oder ein langer BRIEF-TEXT kommt: Nutze ## 🎯 KLARTEXT, ## 🔍 DETAILS, ## 💰 FRISTEN, ## ⚡ SCHLACHTPLAN."
+    "\n2. Wenn der Nutzer Fragen zum Brief stellt (z.B. 'Soll ich zahlen?'): Antworte kurz, direkt und OHNE das Klartext-Format. Sei ein Berater."
+    "\n3. Fasse dich extrem kurz, um Kosten zu sparen."
 )
 
 # --- 5. INPUT ---
-user_input = st.chat_input("Nachricht...")
+user_input = st.chat_input("Nachricht oder Brief-Text...")
 final_prompt = user_input
 
-# Audio-Check (Whisper kostet ca. 0.006$ pro Minute)
+# Audio (Whisper)
 if audio_data and audio_data.get('bytes'):
     current_audio_hash = audio_data['bytes'][:100]
     if "last_audio_ts" not in st.session_state or st.session_state.last_audio_ts != current_audio_hash:
@@ -73,12 +77,13 @@ if audio_data and audio_data.get('bytes'):
         st.session_state.last_audio_ts = current_audio_hash
 
 if final_prompt or uploaded_file:
-    query = final_prompt if final_prompt else "Analysiere kurz."
+    query = final_prompt if final_prompt else "Analysiere diesen Brief kurz."
     st.session_state.messages.append({"role": "user", "content": query})
     with st.chat_message("user"):
         st.markdown(query)
 
     payload = [{"role": "system", "content": system_instruction}]
+    # Nur Text-Historie mitschicken (spart Geld)
     for m in st.session_state.messages[:-1]:
         payload.append({"role": m["role"], "content": m["content"]})
     
@@ -88,13 +93,7 @@ if final_prompt or uploaded_file:
             "role": "user",
             "content": [
                 {"type": "text", "text": query},
-                {
-                    "type": "image_url", 
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{img_b64}",
-                        "detail": "low"  # <--- DER SPARTRICK: Spart ca. 80% der Bildkosten!
-                    }
-                }
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}", "detail": "low"}}
             ]
         })
     else:
@@ -105,8 +104,8 @@ if final_prompt or uploaded_file:
             res = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=payload,
-                max_tokens=400, # <--- Kürzer antworten = billiger
-                temperature=0.3
+                max_tokens=500,
+                temperature=0.2 # Niedrige Temperatur = weniger 'kreatives' Gelaber
             )
             answer = res.choices[0].message.content
             with st.chat_message("assistant"):
