@@ -1,3 +1,4 @@
-groq
+openai
+streamlit
 supabase
 streamlit-mic-recorder
