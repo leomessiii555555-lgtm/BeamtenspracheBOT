@@ -5,7 +5,7 @@ import base64
 from streamlit_mic_recorder import mic_recorder
 import io
 
-# --- 1. SETUP & SICHERHEIT ---
+# --- 1. SETUP ---
 st.set_page_config(page_title="Amtsschimmel-Zähmer PRO", layout="wide", page_icon="🛡️")
 
 if "auth" not in st.session_state:
@@ -25,7 +25,7 @@ try:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 except:
-    st.error("Fehler: API-Keys in den Secrets prüfen!")
+    st.error("Fehler: API-Keys prüfen!")
     st.stop()
 
 # --- 2. FUNKTIONEN ---
@@ -35,16 +35,15 @@ def encode_image(image_file):
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Behörden-Killer")
-    st.write("Spar-Modus: **AKTIV** 💰")
-    st.write("---")
-    uploaded_file = st.file_uploader("📸 Brief scannen", type=["jpg", "jpeg", "png"])
+    st.info("Modus: Intelligent 🧠")
+    uploaded_file = st.file_uploader("📸 Brief-Foto hochladen", type=["jpg", "jpeg", "png"])
     audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Stop", key='mic')
-    if st.button("🗑️ Verlauf löschen"):
+    if st.button("🗑️ Chat leeren"):
         st.session_state.messages = []
         st.session_state.last_audio_ts = None
         st.rerun()
 
-# --- 4. CHAT-LOGIK & SYSTEM PROMPT ---
+# --- 4. CHAT-LOGIK & INTELLIGENTER SYSTEM PROMPT ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -52,21 +51,22 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Die "Gehirn-Anweisung" für die KI
+# Hier ist die Logik, die erkennt, ob es ein Brief-Text oder nur eine Frage ist
 system_instruction = (
-    "Du bist der 'Amtsschimmel-Zähmer'. Deine wichtigste Regel: Unterscheide den Modus!"
-    "\n\n1. ANALYSE-MODUS: Wenn ein BILD hochgeladen wurde oder der Nutzer 'Analysiere' sagt, nutze STRENG dieses Format:"
-    "\n## 🎯 KLARTEXT\n(Was ist das?)\n## 🔍 DETAILS\n(Genaue Analyse)\n## 💰 FRISTEN\n(Daten & Beträge)\n## ⚡ SCHLACHTPLAN\n(Schritte)"
-    "\n\n2. CHAT-MODUS: Wenn der Nutzer Fragen zum Brief stellt (z.B. 'Wie soll ich zahlen?', 'Was bedeutet das?') "
-    "oder einfach nur 'Danke/Okay' sagt, antworte wie ein normaler, hilfreicher Berater. Nutze KEIN festes Format. "
-    "Beantworte die Frage direkt und effizient."
+    "Du bist der 'Amtsschimmel-Zähmer'. Deine Aufgabe ist es, Behördenbriefe zu bändigen."
+    "\n\nENTSCHEIDUNGSLOGIK FÜR DEINE ANTWORT:"
+    "\n1. WENN der Nutzer ein BILD hochlädt ODER einen langen Text reinkopiert, der wie ein Brief aussieht (viele Fakten, Aktenzeichen, Behörden-Deutsch):"
+    "\n   -> Nutze STRENG das Format: ## 🎯 KLARTEXT, ## 🔍 DETAILS, ## 💰 FRISTEN, ## ⚡ SCHLACHTPLAN."
+    "\n\n2. WENN der Nutzer nur eine kurze Frage stellt (z.B. 'Wie soll ich zahlen?'), Smalltalk macht oder sich bedankt:"
+    "\n   -> Antworte als lockerer Berater OHNE festes Format. Sei direkt und hilfreich."
+    "\n\nZusammengefasst: Analyse-Format nur bei 'hartem Stoff' (Briefen/Kopien), sonst normaler Chat."
 )
 
 # --- 5. INPUT VERARBEITUNG ---
-user_input = st.chat_input("Frage zum Brief...")
+user_input = st.chat_input("Brief-Text hier reinkopieren oder Frage stellen...")
 final_prompt = user_input
 
-# Sprache zu Text (Whisper)
+# Audio (Whisper)
 if audio_data and audio_data.get('bytes'):
     current_audio_hash = audio_data['bytes'][:100]
     if "last_audio_ts" not in st.session_state or st.session_state.last_audio_ts != current_audio_hash:
@@ -78,15 +78,13 @@ if audio_data and audio_data.get('bytes'):
             st.session_state.last_audio_ts = current_audio_hash
 
 if final_prompt or uploaded_file:
-    current_query = final_prompt if final_prompt else "Bitte analysiere diesen Brief."
+    current_query = final_prompt if final_prompt else "Analysiere diesen Brief."
     
     st.session_state.messages.append({"role": "user", "content": current_query})
     with st.chat_message("user"):
         st.markdown(current_query)
 
-    # --- SPAR-PAYLOAD (Nur aktuelles Bild + Textverlauf) ---
     messages_payload = [{"role": "system", "content": system_instruction}]
-    
     for m in st.session_state.messages[:-1]:
         messages_payload.append({"role": m["role"], "content": m["content"]})
     
@@ -102,23 +100,17 @@ if final_prompt or uploaded_file:
     else:
         messages_payload.append({"role": "user", "content": current_query})
 
-    # --- KI ANFRAGE ---
-    with st.spinner("🤖 Denkt nach..."):
+    with st.spinner("🤖 Überlege..."):
         try:
             res = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=messages_payload,
-                max_tokens=1000,
+                max_tokens=1200,
                 temperature=0.7
             )
             answer = res.choices[0].message.content
             with st.chat_message("assistant"):
                 st.markdown(answer)
             st.session_state.messages.append({"role": "assistant", "content": answer})
-            
-            # Backup
-            try:
-                supabase.table("brief_summaries").insert({"summary_text": answer[:200]}).execute()
-            except: pass
         except Exception as e:
             st.error(f"Fehler: {e}")
