@@ -2,3 +2,4 @@ openai
 streamlit
 supabase
 streamlit-mic-recorder
+httpx
