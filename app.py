@@ -25,7 +25,7 @@ try:
     client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 except:
-    st.error("API-Key Fehler!")
+    st.error("API-Key Fehler in den Secrets!")
     st.stop()
 
 # --- 2. FUNKTIONEN ---
@@ -35,82 +35,85 @@ def encode_image(image_file):
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Behörden-Killer")
-    uploaded_file = st.file_uploader("📸 Brief hochladen", type=["jpg", "jpeg", "png"])
-    # Mikrofon-Input
-    audio_data = mic_recorder(start_prompt="🎤 Frage sprechen", stop_prompt="🛑 Stop", key='mic')
-    if st.button("🗑️ Chat leeren"):
+    st.write("Spar-Modus: AKTIV ✅")
+    uploaded_file = st.file_uploader("📸 Neuen Brief scannen", type=["jpg", "jpeg", "png"])
+    audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Stop", key='mic')
+    if st.button("🗑️ Verlauf löschen"):
         st.session_state.messages = []
-        st.session_state.last_audio = None # Audio-Reset
         st.rerun()
 
-# --- 4. CHAT-LOGIK ---
+# --- 4. CHAT-HISTORIE ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Den Chatverlauf anzeigen
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- NEUER SYSTEM PROMPT FÜR DETAILS ---
 system_instruction = (
-    "Du bist der 'Amtsschimmel-Zähmer'. Deine Aufgabe: Analysiere Behördenbriefe extrem detailliert. "
-    "Erkläre dem Nutzer genau, was das Beamtendeutsch bedeutet. "
-    "Antworte immer in diesem Format:\n\n"
-    "## 🎯 DER KERN DER SACHE\n(Was ist das für ein Brief? Wer schreibt hier genau?)\n\n"
-    "## 🔍 DETAILLIERTE ANALYSE\n(Gehe Schritt für Schritt durch den Text. Erkläre schwierige Paragraphen.)\n\n"
-    "## 💰 ZAHLEN & FRISTEN\n- **Betrag:** [X] €\n- **Deadline:** [Datum]\n- **Aktenzeichen:** [Nummer]\n\n"
-    "## ⚡ SCHLACHTPLAN\n1. Was muss der Nutzer jetzt tun?\n2. Was passiert, wenn er nichts tut?"
+    "Du bist der 'Amtsschimmel-Zähmer'. Analysiere Behördenbriefe im Detail. "
+    "Erkläre Beamtendeutsch einfach. Antworte mit: 🎯 KLARTEXT, 🔍 DETAILS, 💰 FRISTEN, ⚡ PLAN."
 )
 
-# --- 5. INPUT-VERARBEITUNG ---
-user_text = st.chat_input("Oder hier tippen...")
-final_prompt = None
+# --- 5. INPUT VERARBEITUNG ---
+user_text = st.chat_input("Frage zum Brief...")
+final_prompt = user_text
 
-# 1. Check ob Sprache da ist
+# Sprach-Eingabe (Whisper)
 if audio_data and audio_data.get('bytes'):
     if "last_audio_ts" not in st.session_state or st.session_state.last_audio_ts != audio_data['bytes'][:100]:
-        with st.spinner("Wandle Sprache in Text um..."):
-            audio_bio = io.BytesIO(audio_data['bytes'])
-            audio_bio.name = "input.wav"
-            trans = client.audio.transcriptions.create(file=audio_bio, model="whisper-1")
-            final_prompt = trans.text
-            st.session_state.last_audio_ts = audio_data['bytes'][:100]
+        audio_bio = io.BytesIO(audio_data['bytes'])
+        audio_bio.name = "input.wav"
+        trans = client.audio.transcriptions.create(file=audio_bio, model="whisper-1")
+        final_prompt = trans.text
+        st.session_state.last_audio_ts = audio_data['bytes'][:100]
 
-# 2. Wenn Text getippt wurde, überschreibt das alles
-if user_text:
-    final_prompt = user_text
-
-# 3. Wenn was da ist, ab zu GPT
 if final_prompt or uploaded_file:
-    if not final_prompt: final_prompt = "Bitte analysiere diesen Brief so detailliert wie möglich."
+    # Falls nur ein Bild ohne Text kommt
+    current_query = final_prompt if final_prompt else "Analysiere diesen Brief."
     
-    st.session_state.messages.append({"role": "user", "content": final_prompt})
+    # Nutzer-Nachricht im Chat anzeigen
+    st.session_state.messages.append({"role": "user", "content": current_query})
     with st.chat_message("user"):
-        st.markdown(final_prompt)
+        st.markdown(current_query)
 
+    # --- DER SPAR-PAYLOAD ---
+    # 1. System-Anweisung
     messages_payload = [{"role": "system", "content": system_instruction}]
+    
+    # 2. Alter Text-Verlauf (ohne alte Bilder!)
     for m in st.session_state.messages[:-1]:
         messages_payload.append({"role": m["role"], "content": m["content"]})
     
+    # 3. Aktuelle Anfrage (mit Bild, falls gerade eins hochgeladen wurde)
     if uploaded_file:
         img_b64 = encode_image(uploaded_file)
         messages_payload.append({
             "role": "user",
             "content": [
-                {"type": "text", "text": final_prompt},
+                {"type": "text", "text": current_query},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
         })
     else:
-        messages_payload.append({"role": "user", "content": final_prompt})
+        messages_payload.append({"role": "user", "content": current_query})
 
-    with st.spinner("🤖 GPT analysiert tiefgründig..."):
+    # --- ANFRAGE AN OPENAI ---
+    with st.spinner("🤖 Analysiere..."):
         try:
-            res = client.chat.completions.create(model="gpt-4o-mini", messages=messages_payload)
-            ai_text = res.choices[0].message.content
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages_payload,
+                max_tokens=1000
+            )
+            ai_resp = res.choices[0].message.content
             with st.chat_message("assistant"):
-                st.markdown(ai_text)
-            st.session_state.messages.append({"role": "assistant", "content": ai_text})
+                st.markdown(ai_resp)
+            st.session_state.messages.append({"role": "assistant", "content": ai_resp})
+            
+            # Backup
+            try:
+                supabase.table("brief_summaries").insert({"summary_text": ai_resp[:300]}).execute()
+            except: pass
         except Exception as e:
             st.error(f"Fehler: {e}")
