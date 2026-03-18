@@ -8,16 +8,13 @@ import io
 # --- 1. SETUP ---
 st.set_page_config(page_title="Amtsschimmel-Zähmer", layout="wide")
 
+# Sicheres Laden der Keys
 try:
-    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-    S_URL = st.secrets["SUPABASE_URL"]
-    S_KEY = st.secrets["SUPABASE_KEY"]
-except:
-    st.error("API Keys in Streamlit Secrets fehlen!")
+    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+except Exception:
+    st.error("Fehler: API-Keys fehlen in den Secrets!")
     st.stop()
-
-client = Groq(api_key=GROQ_API_KEY)
-supabase = create_client(S_URL, S_KEY)
 
 # --- 2. BILD-HELFER ---
 def encode_image(image_file):
@@ -27,8 +24,8 @@ def encode_image(image_file):
 with st.sidebar:
     st.title("🛡️ Behörden-Killer")
     uploaded_file = st.file_uploader("📸 Brief hochladen", type=["jpg", "jpeg", "png"])
-    audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Fertig", key='sidebar_mic')
-    if st.button("🗑️ Verlauf löschen"):
+    audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Senden", key='mic')
+    if st.button("🗑️ Chat löschen"):
         st.session_state.messages = []
         st.rerun()
 
@@ -41,66 +38,61 @@ for msg in st.session_state.messages:
         st.markdown(msg["content"])
 
 # --- 5. SYSTEM PROMPT ---
-system_instruction = (
-    "Du bist der 'Amtsschimmel-Zähmer'. Analysiere den Brief auf dem Bild VOLLSTÄNDIG. "
-    "Gib klare Befehle. Struktur: 🎯 KLARTEXT, 💰 FAKTEN, ⚡ SCHLACHTPLAN."
-)
+sys_prompt = "Du bist der 'Amtsschimmel-Zähmer'. Analysiere den Brief. Struktur: 🎯 KLARTEXT, 💰 FAKTEN, ⚡ SCHLACHTPLAN."
 
 # --- 6. INPUT-VERARBEITUNG ---
 user_text = st.chat_input("Frag mich was...")
 
-audio_prompt = None
-if audio_data:
-    audio_bio = io.BytesIO(audio_data['bytes'])
-    audio_bio.name = "input.wav"
-    trans = client.audio.transcriptions.create(file=(audio_bio.name, audio_bio.read()), model="whisper-large-v3")
-    audio_prompt = trans.text
-
-final_input = user_text if user_text else audio_prompt
+final_input = user_text
+if audio_data and "bytes" in audio_data:
+    try:
+        audio_bio = io.BytesIO(audio_data['bytes'])
+        audio_bio.name = "input.wav"
+        trans = client.audio.transcriptions.create(file=(audio_bio.name, audio_bio.read()), model="whisper-large-v3")
+        final_input = trans.text
+    except:
+        pass
 
 if final_input or uploaded_file:
     if not final_input:
-        final_input = "Analysiere diesen Brief."
+        final_input = "Bitte analysiere diesen Brief für mich."
 
     st.session_state.messages.append({"role": "user", "content": final_input})
     with st.chat_message("user"):
         st.markdown(final_input)
 
-    # --- MODEL AUSWAHL (FIXED) ---
-    if uploaded_file:
-        selected_model = "llama-3.2-11b-vision-preview"
-    else:
-        selected_model = "llama-3.3-70b-versatile"
+    # --- DIREKTE MODELL-AUSWAHL (Keine Variablen-Fehler mehr möglich) ---
+    aktuelles_modell = "llama-3.2-11b-vision-preview" if uploaded_file else "llama-3.3-70b-versatile"
     
-    messages_payload = [{"role": "system", "content": system_instruction}]
+    payload = [{"role": "system", "content": sys_prompt}]
     for m in st.session_state.messages[:-1]:
-        messages_payload.append({"role": m["role"], "content": m["content"]})
+        payload.append(m)
     
     if uploaded_file:
-        img_b64 = encode_image(uploaded_file)
-        messages_payload.append({
+        img_64 = encode_image(uploaded_file)
+        payload.append({
             "role": "user",
             "content": [
                 {"type": "text", "text": final_input},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_64}"}}
             ]
         })
     else:
-        messages_payload.append({"role": "user", "content": final_input})
+        payload.append({"role": "user", "content": final_input})
 
-    with st.spinner(f"🤖 Analysiere..."):
+    with st.spinner("🤖 Analysiere..."):
         try:
-            # Hier war der Fehler: selected_model statt model_name
-            res = client.chat.completions.create(model=selected_model, messages=messages_payload)
-            ai_text = res.choices[0].message.content
+            res = client.chat.completions.create(model=aktuelles_modell, messages=payload)
+            antwort = res.choices[0].message.content
             
             with st.chat_message("assistant"):
-                st.markdown(ai_text)
-            st.session_state.messages.append({"role": "assistant", "content": ai_text})
+                st.markdown(antwort)
+            st.session_state.messages.append({"role": "assistant", "content": antwort})
             
             try:
-                supabase.table("brief_summaries").insert({"summary_text": ai_text[:300]}).execute()
-            except: pass
-            
+                supabase.table("brief_summaries").insert({"summary_text": antwort[:300]}).execute()
+            except: 
+                pass
+                
         except Exception as e:
-            st.error(f"Fehler: {e}")
+            st.error(f"Fehler von der KI: {e}")
