@@ -154,4 +154,19 @@ if final_prompt or uploaded_file:
                     st.markdown(answer)
                 st.session_state.messages.append({"role": "assistant", "content": answer})
             except Exception as e:
-                st.error(f"Fehler: {e}")
+                st.error(f"Fehler: {e}") # --- DAS HIER GEHÖRT IN DIE app.py DATEI, NICHT IN SUPABASE ---
+from streamlit_javascript import st_javascript
+
+pay_signal = st_javascript("""
+    window.addEventListener('message', function(event) {
+        if (event.data.type === 'payment_done') {
+            return true;
+        }
+    }, false);
+""")
+
+if pay_signal:
+    supabase.table("profiles").update({"is_premium": True}).eq("id", st.session_state.user_id).execute()
+    st.success("Zahlung empfangen! Du bist jetzt Premium-Nutzer. 🎉")
+    st.balloons()
+    st.rerun()
