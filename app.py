@@ -1,31 +1,46 @@
 import streamlit as st
-from groq import Groq
+from openai import OpenAI
 from supabase import create_client
 import base64
 from streamlit_mic_recorder import mic_recorder
 import io
 
-# --- 1. SETUP ---
-st.set_page_config(page_title="Amtsschimmel-Zähmer", layout="wide")
+# --- 1. INITIALISIERUNG ---
+st.set_page_config(page_title="Amtsschimmel-Zähmer PRO", layout="wide")
 
-# Sicheres Laden der Keys
+# Passwort-Schutz (Damit niemand dein Guthaben leer macht)
+if "auth" not in st.session_state:
+    st.session_state.auth = False
+
+if not st.session_state.auth:
+    st.title("🔒 Sicherer Zugang")
+    pw = st.text_input("Passwort eingeben:", type="password")
+    if pw == "Amt123":  # <--- Das ist dein Passwort! Kannst du hier ändern.
+        st.session_state.auth = True
+        st.rerun()
+    else:
+        if pw: st.error("Falsches Passwort!")
+        st.stop()
+
+# API Keys aus den Streamlit Secrets laden
 try:
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
     supabase = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
-except Exception:
-    st.error("Fehler: API-Keys fehlen in den Secrets!")
+except Exception as e:
+    st.error("Fehler: API-Keys fehlen in den Secrets! (OPENAI_API_KEY prüfen)")
     st.stop()
 
-# --- 2. BILD-HELFER ---
+# --- 2. FUNKTIONEN ---
 def encode_image(image_file):
     return base64.b64encode(image_file.getvalue()).decode('utf-8')
 
 # --- 3. SIDEBAR ---
 with st.sidebar:
     st.title("🛡️ Behörden-Killer")
+    st.info("Status: GPT-4o-mini Aktiv ✅")
     uploaded_file = st.file_uploader("📸 Brief hochladen", type=["jpg", "jpeg", "png"])
-    audio_data = mic_recorder(start_prompt="🎤 Sprechen", stop_prompt="🛑 Senden", key='mic')
-    if st.button("🗑️ Chat löschen"):
+    audio_data = mic_recorder(start_prompt="🎤 Anweisung sprechen", stop_prompt="🛑 Fertig", key='mic')
+    if st.button("🗑️ Chat leeren"):
         st.session_state.messages = []
         st.rerun()
 
@@ -37,62 +52,71 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# --- 5. SYSTEM PROMPT ---
-sys_prompt = "Du bist der 'Amtsschimmel-Zähmer'. Analysiere den Brief. Struktur: 🎯 KLARTEXT, 💰 FAKTEN, ⚡ SCHLACHTPLAN."
+# Strengere Anweisung gegen Missbrauch
+system_instruction = (
+    "Du bist der 'Amtsschimmel-Zähmer'. Deine Aufgabe: Analysiere Behördenbriefe. "
+    "Sei direkt, frech und effizient. Lehne Fragen ab, die nichts mit Briefen zu tun haben. "
+    "Antworte immer so: \n"
+    "### 🎯 KLARTEXT\n(Was wollen die? 1 Satz)\n\n"
+    "### 💰 FAKTEN\n- Betrag: [X]\n- DEADLINE: **[Datum]**\n\n"
+    "### ⚡ SCHLACHTPLAN\n1. [Schritt 1]\n2. [Schritt 2]"
+)
 
-# --- 6. INPUT-VERARBEITUNG ---
-user_text = st.chat_input("Frag mich was...")
+# --- 5. INPUT VERARBEITUNG ---
+user_text = st.chat_input("Frage zum Brief...")
+final_prompt = user_text
 
-final_input = user_text
+# Audio zu Text (OpenAI Whisper)
 if audio_data and "bytes" in audio_data:
     try:
         audio_bio = io.BytesIO(audio_data['bytes'])
         audio_bio.name = "input.wav"
-        trans = client.audio.transcriptions.create(file=(audio_bio.name, audio_bio.read()), model="whisper-large-v3")
-        final_input = trans.text
-    except:
-        pass
+        trans = client.audio.transcriptions.create(file=audio_bio, model="whisper-1")
+        final_prompt = trans.text
+    except: pass
 
-if final_input or uploaded_file:
-    if not final_input:
-        final_input = "Bitte analysiere diesen Brief für mich."
-
-    st.session_state.messages.append({"role": "user", "content": final_input})
-    with st.chat_message("user"):
-        st.markdown(final_input)
-
-    # --- DIREKTE MODELL-AUSWAHL (Keine Variablen-Fehler mehr möglich) ---
-    aktuelles_modell = "llama-3.2-11b-vision-preview" if uploaded_file else "llama-3.3-70b-versatile"
+if final_prompt or uploaded_file:
+    if not final_prompt: final_prompt = "Analysiere diesen Brief."
     
-    payload = [{"role": "system", "content": sys_prompt}]
+    st.session_state.messages.append({"role": "user", "content": final_prompt})
+    with st.chat_message("user"):
+        st.markdown(final_prompt)
+
+    # Payload für OpenAI vorbereiten
+    messages_payload = [{"role": "system", "content": system_instruction}]
     for m in st.session_state.messages[:-1]:
-        payload.append(m)
+        messages_payload.append({"role": m["role"], "content": m["content"]})
     
     if uploaded_file:
-        img_64 = encode_image(uploaded_file)
-        payload.append({
+        img_b64 = encode_image(uploaded_file)
+        messages_payload.append({
             "role": "user",
             "content": [
-                {"type": "text", "text": final_input},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_64}"}}
+                {"type": "text", "text": final_prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
             ]
         })
     else:
-        payload.append({"role": "user", "content": final_input})
+        messages_payload.append({"role": "user", "content": final_prompt})
 
-    with st.spinner("🤖 Analysiere..."):
+    with st.spinner("🤖 GPT liest den Brief..."):
         try:
-            res = client.chat.completions.create(model=aktuelles_modell, messages=payload)
-            antwort = res.choices[0].message.content
+            # Nutzung des günstigen gpt-4o-mini Modells
+            res = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages_payload,
+                max_tokens=1000
+            )
+            ai_text = res.choices[0].message.content
             
             with st.chat_message("assistant"):
-                st.markdown(antwort)
-            st.session_state.messages.append({"role": "assistant", "content": antwort})
+                st.markdown(ai_text)
+            st.session_state.messages.append({"role": "assistant", "content": ai_text})
             
+            # Backup in Supabase
             try:
-                supabase.table("brief_summaries").insert({"summary_text": antwort[:300]}).execute()
-            except: 
-                pass
-                
+                supabase.table("brief_summaries").insert({"summary_text": ai_text[:300]}).execute()
+            except: pass
+            
         except Exception as e:
-            st.error(f"Fehler von der KI: {e}")
+            st.error(f"Fehler: {e}")
