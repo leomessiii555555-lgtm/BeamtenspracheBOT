@@ -12,7 +12,7 @@ st.set_page_config(page_title="Amtsschimmel-Zähmer STRENG", layout="wide")
 
 # WICHTIG: Trage hier deine echte App-URL ein, sobald sie online ist!
 # Beispiel: "https://deine-app.streamlit.app"
-APP_URL = "https://deine-app-url.streamlit.app"
+APP_URL = "https://beamtensprachebot-npmkx2x2scksnmzpwfgteu.streamlit.app/"
 
 # API Clients initialisieren (aus den Streamlit Secrets)
 try:
