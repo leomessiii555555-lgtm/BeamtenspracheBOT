@@ -4,143 +4,159 @@ from supabase import create_client, Client
 import smtplib
 from email.message import EmailMessage
 import base64
+import re
 
-# --- 1. KONFIGURATION ---
+# --- 1. KONFIGURATION (Laden aus st.secrets) ---
 try:
     OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    APP_URL = st.secrets["APP_URL"]
+    RESEND_API_KEY = st.secrets["RESEND_API_KEY"]
     
+    # Resend SMTP Einstellungen
     SMTP_SERVER = "smtp.resend.com"
     SMTP_PORT = 465
     SMTP_USER = "resend"
-    SMTP_PASSWORD = st.secrets["RESEND_API_KEY"] 
+    # WICHTIG: Der Absender MUSS bei Resend im Testmodus so heißen:
     SENDER_MAIL = "onboarding@resend.dev" 
+    
 except Exception as e:
-    st.error("Konfigurationsfehler in den Secrets!")
+    st.error(f"Fehler: Secrets konnten nicht geladen werden! ({e})")
     st.stop()
 
+# Initialisierung
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 2. FUNKTIONEN ---
+# --- 2. HILFSFUNKTIONEN ---
+
 def bild_zu_base64(bild_datei):
+    """Wandelt das Foto für die KI um."""
     return base64.b64encode(bild_datei.read()).decode('utf-8')
 
 def sende_ergebnis_email(ziel_email, inhalt):
+    """Verschickt die Analyse via Resend."""
     try:
         msg = EmailMessage()
         msg.set_content(f"Dein Beamten-Zähmer Ergebnis:\n\n{inhalt}")
-        msg['Subject'] = "Analyse deines Behörden-Schreibens"
+        msg['Subject'] = "🛡️ Analyse deines Behörden-Briefs"
         msg['From'] = SENDER_MAIL
         msg['To'] = ziel_email
-        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-            server.login(SMTP_USER, SMTP_PASSWORD)
+        
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
+            server.login(SMTP_USER, RESEND_API_KEY)
             server.send_message(msg)
-    except: pass
+        return True
+    except Exception as e:
+        # Im Testmodus schlägt dies fehl, wenn ziel_email nicht deine eigene ist
+        return False
 
-def hole_profil(user_id):
-    res = supabase.table("profiles").select("*").eq("id", user_id).execute()
-    return res.data[0] if res.data else None
-
-# --- 3. AUTH-LOGIK ---
+# --- 3. LOGIN & AUTHENTIFIZIERUNG ---
 if "user" not in st.session_state:
     st.session_state.user = None
 
 if not st.session_state.user:
-    st.title("🛡️ Beamten-Zähmer")
-    tab1, tab2 = st.tabs(["Anmelden", "Konto erstellen"])
-    with tab2:
-        r_mail = st.text_input("E-Mail")
-        r_pw = st.text_input("Passwort", type="password")
-        if st.button("Registrieren"):
+    st.title("🛡️ Beamten-Zähmer: Zugang")
+    t1, t2 = st.tabs(["Anmelden", "Konto erstellen"])
+    
+    with t2:
+        r_email = st.text_input("E-Mail", key="reg_m")
+        r_pw = st.text_input("Passwort", type="password", key="reg_p")
+        if st.button("Konto erstellen"):
             try:
-                supabase.auth.sign_up({"email": r_mail, "password": r_pw})
-                st.success("Konto angelegt! Bitte E-Mail bestätigen.")
-            except Exception as e: st.error(f"Fehler: {e}")
-    with tab1:
-        l_mail = st.text_input("E-Mail", key="l_m")
-        l_pw = st.text_input("Passwort", type="password", key="l_p")
-        if st.button("Login"):
+                supabase.auth.sign_up({"email": r_email, "password": r_pw})
+                st.success("Erstellt! Schau in dein Postfach (auch Spam).")
+            except Exception as e: st.error(e)
+
+    with t1:
+        l_email = st.text_input("E-Mail", key="log_m")
+        l_pw = st.text_input("Passwort", type="password", key="log_p")
+        if st.button("Einloggen"):
             try:
-                res = supabase.auth.sign_in_with_password({"email": l_mail, "password": l_pw})
+                res = supabase.auth.sign_in_with_password({"email": l_email, "password": l_pw})
                 st.session_state.user = res.user
                 st.rerun()
             except: st.error("Login fehlgeschlagen. Mail bestätigt?")
     st.stop()
 
-# --- 4. NEUES CHAT-LAYOUT ---
+# --- 4. DAS NEUE CHAT-LAYOUT ---
 
-# Sidebar: Nur für das Bild und Profil
+# Sidebar für Bild-Upload
 with st.sidebar:
     st.title("📸 Brief-Scan")
-    uploaded_file = st.file_uploader("Foto hochladen", type=["jpg", "png", "jpeg"])
+    uploaded_file = st.file_uploader("Foto vom Brief hochladen", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        st.image(uploaded_file, caption="Dein Dokument", use_container_width=True)
+    
     st.divider()
     if st.button("Abmelden"):
         st.session_state.user = None
         st.rerun()
 
-# Hauptbereich: Chat-Fenster
+# Haupt-Chat-Bereich
 st.title("🛡️ Der Beamten-Zähmer")
-st.caption("Ich helfe dir bei Briefen von Ämtern. Mathe oder Fußball ignoriere ich.")
+st.markdown("*Ich übersetze Behörden-Deutsch in Menschen-Deutsch.*")
 
-# Chat-Verlauf Initialisierung
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Verlauf anzeigen
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
-# Eingabe unten (Text & Mikrofon-Icon ist im Browser-Input integriert)
-prompt = st.chat_input("Schreib mir oder nutze das Mikrofon deiner Tastatur...")
+# Chat Eingabe unten (mit Mikrofon-Support vom System)
+prompt = st.chat_input("Schreib mir oder nutze die Spracheingabe deiner Tastatur...")
 
 if prompt or uploaded_file:
-    # Falls ein Bild hochgeladen wurde, wird es verarbeitet
-    image_b64 = bild_zu_base64(uploaded_file) if uploaded_file else None
-    
-    # Nutzer-Nachricht anzeigen
+    # 1. Nutzer-Nachricht anzeigen
     with st.chat_message("user"):
-        st.markdown(prompt if prompt else "Brief-Analyse angefordert...")
+        anzeige_text = prompt if prompt else "Ich habe ein Bild hochgeladen. Bitte analysiere es."
+        st.markdown(anzeige_text)
     
-    st.session_state.messages.append({"role": "user", "content": prompt if prompt else "Bild hochgeladen"})
+    st.session_state.messages.append({"role": "user", "content": anzeige_text})
 
+    # 2. KI-Antwort generieren
     with st.chat_message("assistant"):
-        with st.spinner("Ich lese das für dich..."):
-            # SYSTEM PROMPT: Hier liegen die Regeln!
-            system_rules = """Du bist der 'Beamten-Zähmer'. 
-            REGELN:
-            1. Antworte NUR auf Fragen zu Behörden, Briefen, Ämtern oder Gesetzen.
-            2. Wenn der Nutzer über Mathe, Fußball oder andere Themen redet, sage höflich: 'Das ist kein Behördenthema. Damit verschwende ich keine Zeit, ich zähme lieber den Amtsschimmel für dich!'
-            3. Smalltalk über Behörden ist erlaubt (z.B. 'Warum sind die so langsam?').
-            4. Wenn du eine Analyse machst: Nutze Bulletpoints, markiere Fristen FETT und erkläre es wie für ein Kind.
-            5. Sei humorvoll und frech gegenüber dem Amt, aber hilfsbereit zum Nutzer."""
+        with st.spinner("Ich bändige den Amtsschimmel..."):
+            try:
+                # Die Regeln (System Prompt)
+                system_rules = """Du bist der 'Beamten-Zähmer'. 
+                REGELN:
+                1. Antworte NUR auf Themen zu Behörden, Briefen, Ämtern, Verträgen oder Gesetzen.
+                2. Wenn der Nutzer über Mathe, Fußball, Kochen oder andere Off-Topic Themen redet, antworte: 'Das ist kein Behördenthema. Damit verschwende ich keine Zeit, ich zähme lieber den Amtsschimmel für dich!'
+                3. Bei Analysen: Erkläre es wie für ein Kind, nutze Bulletpoints und markiere Fristen FETT.
+                4. Smalltalk über das 'schlimme Amt' ist erlaubt. Sei humorvoll und frech zum Amt, aber loyal zum Nutzer."""
 
-            messages = [{"role": "system", "content": system_rules}]
-            
-            # Bild oder Text an OpenAI senden
-            if image_b64:
-                messages.append({
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt if prompt else "Analysiere diesen Brief."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}}
-                    ]
-                })
-            else:
-                messages.append({"role": "user", "content": prompt})
+                msgs = [{"role": "system", "content": system_rules}]
+                
+                # Falls Bild vorhanden
+                if uploaded_file:
+                    base64_image = bild_zu_base64(uploaded_file)
+                    msgs.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt if prompt else "Analysiere dieses Bild."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        ]
+                    })
+                else:
+                    msgs.append({"role": "user", "content": prompt})
 
-            response = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=messages
-            )
-            
-            full_response = response.choices[0].message.content
-            st.markdown(full_response)
-            
-            # Ergebnis per Mail (optional im Hintergrund)
-            sende_ergebnis_email(st.session_state.user.email, full_response)
-
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                # API Call
+                completion = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=msgs
+                )
+                
+                antwort = completion.choices[0].message.content
+                st.markdown(antwort)
+                
+                # E-Mail im Hintergrund senden
+                sende_ergebnis_email(st.session_state.user.email, antwort)
+                
+                # Im Verlauf speichern
+                st.session_state.messages.append({"role": "assistant", "content": antwort})
+                
+            except Exception as e:
+                st.error(f"Fehler: {e}")
