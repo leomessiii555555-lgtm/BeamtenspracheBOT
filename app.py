@@ -2,7 +2,7 @@ import streamlit as st
 from openai import OpenAI
 import base64
 import io
-from streamlit_mic_recorder import mic_recorder # WICHTIG: Muss in requirements.txt
+from streamlit_mic_recorder import mic_recorder
 
 # --- 1. SETUP & PASSWORT ---
 st.set_page_config(page_title="Beamten-Zähmer V3", layout="centered")
@@ -38,7 +38,6 @@ def bild_zu_base64(datei):
 
 def transcribe_audio(audio_bytes):
     try:
-        # Erstellt ein Datei-ähnliches Objekt aus den Bytes für die API
         audio_file = io.BytesIO(audio_bytes)
         audio_file.name = "input.mp3"
         response = openai_client.audio.transcriptions.create(
@@ -57,7 +56,6 @@ with st.sidebar:
     foto = st.file_uploader("Foto vom Brief", type=["jpg", "png", "jpeg"])
     
     st.write("### Sprache aufnehmen")
-    # Das echte Mikrofon-Tool
     audio_record = mic_recorder(
         start_prompt="🎤 Aufnahme starten",
         stop_prompt="🛑 Stopp & Senden",
@@ -75,7 +73,7 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 
 # Mikrofon-Aufnahme verarbeiten
-if audio_record and "last_audio_id" not in st.session_state or (audio_record and st.session_state.get("last_audio_id") != audio_record['id']):
+if audio_record and (st.session_state.get("last_audio_id") != audio_record['id']):
     with st.spinner("Ich höre zu..."):
         text = transcribe_audio(audio_record['bytes'])
         if text:
@@ -89,30 +87,31 @@ for m in st.session_state.messages:
 
 prompt = st.chat_input("Was willst du wissen?")
 
-# Audio-Text als Prompt nutzen
 if "transcribed_input" in st.session_state:
     prompt = st.session_state.transcribed_input
     del st.session_state.transcribed_input
 
 if prompt or (foto and "foto_verarbeitet" not in st.session_state):
     
+    # --- DER OPTIMIERTE SYSTEM PROMPT ---
     system_prompt = """
     Du bist der 'Beamten-Zähmer'. Ein menschlicher Ratgeber für Behörden-Kram.
     
     DEINE GRENZEN:
-    - Antworte NUR auf Fragen zu Behörden, Briefen, Gesetzen oder Anträgen.
-    - Wenn der User etwas anderes fragt, sag höflich: 'Verzeiht, edler Fragesteller, doch meine Expertise liegt allein im Reiche der Paragraphen.'
+    - Antworte NUR auf Fragen zu Behörden, Briefen oder Anträgen.
+    - Andere Themen lehnst du höflich ab ("Verzeiht, edler Fragesteller...").
 
-    REGELN FÜR DIE ANALYSE:
-    1. Wenn ein NEUES BILD kommt, antworte SOFORT mit dieser Struktur:
-       - **Was ist los?**: (Kurze Erklärung)
-       - **Forderung**: (Was genau muss getan werden?)
-       - **Frist**: (Datum **FETT**)
+    REGELN FÜR DIE ANALYSE (bei neuem Bild/Text):
+    1. Wenn ein NEUES BILD/Text kommt, antworte SOFORT mit dieser Struktur:
+       - **Was ist los?**: (Kurze Erklärung des Vorfalls)
+       - **Geldbeutel-Check**: (Exakter Betrag in Euro. Wenn nichts da steht: 'Keine Zahlung nötig')
+       - **Zahlungs-Daten**: (Falls vorhanden: IBAN, Empfänger und UNBEDINGT den Verwendungszweck/Kassenzeichen nennen!)
+       - **Forderung**: (Was musst du tun? Widerspruch? Anhörung? Einfach zahlen?)
+       - **Frist**: (Datum/Zeitraum **FETT** markieren)
     
     REGELN FÜR DEN CHAT:
-    2. Sei kein Bot. Antworte direkt wie ein Mensch.
-    3. Wenn der User eine Zusammenfassung will, nutze Bulletpoints.
-    4. Wenn eine normale Frage kommt, antworte im Text ohne den Brief zu wiederholen.
+    2. Sei ein Mensch, kein Bot. Antworte direkt.
+    3. Keine unnötigen Wiederholungen. Wenn der User fragt "Soll ich zahlen?", sag deine Meinung basierend auf dem Brief.
     """
 
     with st.chat_message("user"):
@@ -130,7 +129,7 @@ if prompt or (foto and "foto_verarbeitet" not in st.session_state):
                 msgs[-1] = {
                     "role": "user", 
                     "content": [
-                        {"type": "text", "text": prompt if prompt else "Analysiere diesen Brief mit Bulletpoints."},
+                        {"type": "text", "text": prompt if prompt else "Analysiere diesen Brief mit Fokus auf Geld und Daten."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
                     ]
                 }
