@@ -4,153 +4,140 @@ from openai import OpenAI
 from supabase import create_client, Client
 import base64
 
-# --- 1. KONFIGURATION (GEHIRN DER APP) ---
-# Wir laden die Schlüssel sicher aus den Secrets
+# --- 1. SETUP & GEHEIMNISSE ---
 try:
-    # API Keys
-    RESEND_API_KEY = st.secrets["RESEND_API_KEY"]
-    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-    SUPABASE_URL = st.secrets["SUPABASE_URL"]
-    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    
-    # Die Adresse, an die der Bestätigungslink schicken soll
-    # Lokal ist das 8501. Wenn du online gehst, änderst du das in den Secrets.
-    APP_URL = "http://localhost:8501"
+    # Wir laden alles aus den Secrets
+    R_KEY = st.secrets["RESEND_API_KEY"]
+    O_KEY = st.secrets["OPENAI_API_KEY"]
+    S_URL = st.secrets["SUPABASE_URL"]
+    S_KEY = st.secrets["SUPABASE_KEY"]
 
-    # Clients initialisieren
-    resend.api_key = RESEND_API_KEY
-    openai_client = OpenAI(api_key=OPENAI_API_KEY)
-    supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    # Port 8501 für den Rücksprung nach der Mail-Bestätigung
+    REDIRECT_URL = "http://localhost:8501"
+
+    # Verbindung zu den Diensten aufbauen
+    resend.api_key = R_KEY
+    openai_client = OpenAI(api_key=O_KEY)
+    supabase: Client = create_client(S_URL, S_KEY)
 except Exception as e:
-    st.error(f"❌ Fehler: Secrets fehlen oder sind falsch benannt! ({e})")
+    st.error(f"Konfigurations-Fehler: {e}")
     st.stop()
 
-# --- 2. FUNKTIONEN (DIE WERKZEUGE) ---
+# --- 2. WERKZEUGE (MAIL & BILD) ---
 
 def bild_zu_base64(bild_datei):
-    """Wandelt ein Foto so um, dass die KI es lesen kann."""
     return base64.b64encode(bild_datei.read()).decode('utf-8')
 
 def sende_ergebnis_email(ziel_email, inhalt):
-    """Verschickt die Analyse per E-Mail."""
+    """Versendet die KI-Analyse über Resend."""
     try:
+        # ACHTUNG: onboarding@resend.dev schickt NUR an deine eigene E-Mail!
         r = resend.Emails.send({
-            "from": "onboarding@resend.dev", # Standard bei Resend Test-Accounts
+            "from": "onboarding@resend.dev",
             "to": ziel_email,
             "subject": "🛡️ Deine Beamten-Zähmer Analyse",
-            "html": f"""
-            <div style="font-family: Arial; padding: 20px; border: 1px solid #eee;">
-                <h2 style="color: #1E88E5;">Hier ist deine Analyse:</h2>
-                <p style="white-space: pre-wrap;">{inhalt}</p>
-                <hr>
-                <p style="font-size: 0.8em; color: #777;">Gesendet vom Beamten-Zähmer Bot.</p>
-            </div>
-            """
+            "html": f"<h3>Deine Analyse:</h3><p>{inhalt.replace(chr(10), '<br>')}</p>"
         })
-        st.toast("📧 E-Mail wurde versendet!", icon="✅")
+        st.toast(f"Resend hat die Mail akzeptiert! ID: {r.get('id')}", icon="📧")
         return True
     except Exception as e:
-        st.sidebar.error(f"E-Mail Fehler: {e}")
+        st.sidebar.error(f"Resend-Fehler: {e}")
         return False
 
-# --- 3. LOGIN-SYSTEM (DER TÜRSTEHER) ---
+# --- 3. LOGIN & REGISTRIERUNG ---
 
 if "user" not in st.session_state:
     st.session_state.user = None
 
 if not st.session_state.user:
     st.title("🛡️ Beamten-Zähmer Login")
-    tab_login, tab_register = st.tabs(["Anmelden", "Konto erstellen"])
+    tab1, tab2 = st.tabs(["Anmelden", "Konto erstellen"])
     
-    with tab_register:
-        reg_email = st.text_input("E-Mail", key="reg_e")
-        reg_pw = st.text_input("Passwort", type="password", key="reg_p")
-        if st.button("Konto erstellen"):
+    with tab2:
+        r_mail = st.text_input("Deine E-Mail", key="r_m")
+        r_pw = st.text_input("Passwort (min. 6 Zeichen)", type="password", key="r_p")
+        if st.button("Jetzt Registrieren"):
             try:
-                # Hier erzwingen wir den Rücksprung auf Port 8501
-                supabase.auth.sign_up({
-                    "email": reg_email, 
-                    "password": reg_pw,
-                    "options": {"email_redirect_to": APP_URL}
+                # WICHTIG: Hier sagen wir Supabase, dass es auf 8501 zurück soll
+                auth_res = supabase.auth.sign_up({
+                    "email": r_mail, 
+                    "password": r_pw,
+                    "options": {"email_redirect_to": REDIRECT_URL}
                 })
-                st.success("📩 Bestätigungslink gesendet! Schau in dein Postfach (und Spam).")
+                if auth_res.user:
+                    st.success(f"User-Konto angelegt! Schau jetzt in dein Postfach: {r_mail}")
+                    st.info("Falls keine Mail kommt: Prüf den Spam oder warte 5 Min (Rate-Limit).")
+                else:
+                    st.warning("Konto konnte nicht erstellt werden. Vielleicht existiert es schon?")
             except Exception as e:
-                st.error(f"Registrierung fehlgeschlagen: {e}")
+                st.error(f"Fehler bei Supabase: {e}")
 
-    with tab_login:
-        log_email = st.text_input("E-Mail", key="log_e")
-        log_pw = st.text_input("Passwort", type="password", key="log_p")
+    with tab1:
+        l_mail = st.text_input("E-Mail", key="l_m")
+        l_pw = st.text_input("Passwort", type="password", key="l_p")
         if st.button("Einloggen"):
             try:
-                auth_res = supabase.auth.sign_in_with_password({"email": log_email, "password": log_pw})
-                st.session_state.user = auth_res.user
+                res = supabase.auth.sign_in_with_password({"email": l_mail, "password": l_pw})
+                st.session_state.user = res.user
                 st.rerun()
-            except:
-                st.error("Login fehlgeschlagen. Mail nicht bestätigt oder Passwort falsch.")
+            except Exception as e:
+                st.error("Login fehlgeschlagen. Mail bestätigt? Passwort korrekt?")
     st.stop()
 
-# --- 4. HAUPT-APP (WENN EINGELOGGT) ---
+# --- 4. HAUPT-INTERFACE ---
 
-# Sidebar für Bildupload
 with st.sidebar:
-    st.title("📸 Dokument scannen")
-    foto = st.file_uploader("Brief fotografieren", type=["jpg", "png", "jpeg"])
-    if foto:
-        st.image(foto, caption="Dein Brief")
+    st.title("📸 Brief scannen")
+    u_file = st.file_uploader("Bild hochladen", type=["jpg", "png", "jpeg"])
+    if u_file:
+        st.image(u_file)
     st.divider()
     if st.button("Abmelden"):
         st.session_state.user = None
         st.rerun()
 
-# Haupt-Chat Fenster
 st.title("🛡️ Der Beamten-Zähmer")
-st.write(f"Hallo **{st.session_state.user.email}**! Wie kann ich helfen?")
+st.write(f"Eingeloggt als: {st.session_state.user.email}")
 
-if "chat_verlauf" not in st.session_state:
-    st.session_state.chat_verlauf = []
+if "chat" not in st.session_state:
+    st.session_state.chat = []
 
-# Verlauf anzeigen
-for msg in st.session_state.chat_verlauf:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+for m in st.session_state.chat:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
 
-# Eingabe unten
-user_input = st.chat_input("Schreib mir oder nutze das Mikro...")
+# CHAT INPUT GANZ UNTEN
+prompt = st.chat_input("Was hat das Amt geschrieben?")
 
-if user_input or foto:
-    # Nachricht anzeigen
+if prompt or u_file:
     with st.chat_message("user"):
-        text = user_input if user_input else "Analysiere diesen Brief für mich."
-        st.markdown(text)
-    st.session_state.chat_verlauf.append({"role": "user", "content": text})
+        txt = prompt if prompt else "Analysiere das Bild."
+        st.markdown(txt)
+    st.session_state.chat.append({"role": "user", "content": txt})
 
-    # KI-Antwort generieren
     with st.chat_message("assistant"):
-        with st.spinner("Ich bändige das Behörden-Deutsch..."):
-            instruktion = """Du bist der 'Beamten-Zähmer'. 
-            - Antworte NUR auf Behörden, Ämter, Briefe.
-            - Andere Themen lehnst du humorvoll ab.
-            - Markiere Fristen FETT. Nutze einfache Sprache."""
+        with st.spinner("Ich bändige das Deutsch..."):
+            system_msg = "Du bist der Beamten-Zähmer. Antworte nur auf Behördenkram. Fristen FETT markieren."
+            msgs = [{"role": "system", "content": system_msg}]
             
-            nachrichten = [{"role": "system", "content": instruktion}]
-            
-            if foto:
-                b64 = bild_zu_base64(foto)
-                nachrichten.append({"role": "user", "content": [
-                    {"type": "text", "text": text},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+            if u_file:
+                base64_img = bild_zu_base64(u_file)
+                msgs.append({"role": "user", "content": [
+                    {"type": "text", "text": txt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
                 ]})
             else:
-                nachrichten.append({"role": "user", "content": text})
+                msgs.append({"role": "user", "content": txt})
 
             try:
-                ergebnis = openai_client.chat.completions.create(model="gpt-4o", messages=nachrichten)
-                ki_antwort = ergebnis.choices[0].message.content
-                st.markdown(ki_antwort)
+                # KI ANTWORT
+                response = openai_client.chat.completions.create(model="gpt-4o", messages=msgs)
+                antwort = response.choices[0].message.content
+                st.markdown(antwort)
                 
-                # E-Mail im Hintergrund senden
-                sende_ergebnis_email(st.session_state.user.email, ki_antwort)
+                # MAIL SENDEN
+                sende_ergebnis_email(st.session_state.user.email, antwort)
                 
-                st.session_state.chat_verlauf.append({"role": "assistant", "content": ki_antwort})
+                st.session_state.chat.append({"role": "assistant", "content": antwort})
             except Exception as e:
                 st.error(f"KI-Fehler: {e}")
