@@ -3,6 +3,7 @@ from openai import OpenAI
 from supabase import create_client, Client
 import smtplib
 from email.message import EmailMessage
+import base64
 
 # --- 1. KONFIGURATION ---
 try:
@@ -12,156 +13,147 @@ try:
     PAYPAL_CLIENT_ID = st.secrets["PAYPAL_CLIENT_ID"]
     APP_URL = st.secrets["APP_URL"]
     
-    # E-Mail Konfiguration
-    SMTP_SERVER = st.secrets["SMTP_SERVER"]
-    SMTP_PORT = 587  
-    SMTP_USER = st.secrets["SMTP_USER"]
-    SMTP_PASSWORD = st.secrets["SMTP_PASSWORD"]
+    # Mail-Konfiguration
+    SMTP_SERVER = "smtp.resend.com"
+    SMTP_PORT = 465
+    SMTP_USER = "resend"
+    SMTP_PASSWORD = st.secrets["RESEND_API_KEY"] 
+    SENDER_MAIL = "onboarding@resend.dev" 
+    
 except Exception as e:
-    st.error(f"Kritischer Fehler: Secrets fehlen! Details: {e}")
+    st.error(f"Konfigurationsfehler: {e}")
     st.stop()
 
-# Initialisierung
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 2. KERN-FUNKTIONEN ---
+# --- 2. FUNKTIONEN ---
+
+def bild_zu_base64(bild_datei):
+    """Konvertiert ein hochgeladenes Bild für die KI."""
+    return base64.b64encode(bild_datei.read()).decode('utf-8')
 
 def sende_ergebnis_email(ziel_email, inhalt):
-    """Verschickt die Analyse sicher per STARTTLS."""
     try:
         msg = EmailMessage()
-        msg.set_content(f"Amtsschimmel-Zähmer Analyse:\n\n{inhalt}")
-        msg['Subject'] = "Dein Behörden-Bescheid (Ergebnis)"
-        msg['From'] = SMTP_USER
+        msg.set_content(f"Dein Beamten-Roboter Ergebnis:\n\n{inhalt}")
+        msg['Subject'] = "Analyse deines Behörden-Bescheids"
+        msg['From'] = SENDER_MAIL
         msg['To'] = ziel_email
-        
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
-            server.starttls() 
+        with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10) as server:
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
         return True
     except Exception as e:
-        # Zeigt den genauen SMTP Fehler an (wichtig für die Fehlersuche!)
-        st.error(f"E-Mail Versand an {ziel_email} fehlgeschlagen: {e}")
+        st.error(f"E-Mail Fehler: {e}")
         return False
 
 def hole_user_profil(user_id):
-    """Sucht Profil oder legt es an."""
-    try:
-        res = supabase.table("profiles").select("*").eq("id", user_id).execute()
-        if not res.data:
-            neu = {"id": user_id, "text_count": 0, "is_premium": False}
-            supabase.table("profiles").insert(neu).execute()
-            return neu
-        return res.data[0]
-    except Exception as e:
-        st.error(f"Datenbank-Fehler: {e}")
-        return {"id": user_id, "text_count": 0, "is_premium": False}
+    res = supabase.table("profiles").select("*").eq("id", user_id).execute()
+    if not res.data:
+        neu = {"id": user_id, "text_count": 0, "is_premium": False}
+        supabase.table("profiles").insert(neu).execute()
+        return neu
+    return res.data[0]
 
-# --- 3. LOGIN & REGISTRIERUNG ---
+# --- 3. LOGIN & AUTH ---
 if "user" not in st.session_state:
     st.session_state.user = None
 
-# PayPal-Logik: Validierung
-if st.query_params.get("payment") == "success" and "user_id" in st.session_state:
-    try:
-        supabase.table("profiles").update({"is_premium": True}).eq("id", st.session_state.user_id).execute()
-        st.success("Premium aktiviert! ✨")
-        # Query Params säubern
-        st.query_params.clear()
-    except Exception as e:
-        st.error(f"Upgrade fehlgeschlagen: {e}")
-
 if not st.session_state.user:
-    st.title("🛡️ Beamten-Roboter: Zugang")
-    t1, t2 = st.tabs(["Login", "Konto erstellen"])
-    
+    st.title("🛡️ Beamten-Zähmer Login")
+    t1, t2 = st.tabs(["Login", "Registrieren"])
     with t2:
-        r_email = st.text_input("E-Mail Adresse", key="reg_mail")
-        r_pw = st.text_input("Passwort wählen", type="password", key="reg_pw")
-        if st.button("Jetzt Registrieren"):
-            try:
-                # Supabase Auth Aufruf
-                response = supabase.auth.sign_up({"email": r_email, "password": r_pw})
-                st.info(f"Checke dein Postfach ({r_email})! Bitte den Link in der Mail klicken.")
-            except Exception as e:
-                st.error(f"Registrierung fehlgeschlagen: {e}")
-
+        r_email = st.text_input("E-Mail")
+        r_pw = st.text_input("Passwort", type="password")
+        if st.button("Konto erstellen"):
+            supabase.auth.sign_up({"email": r_email, "password": r_pw})
+            st.info("Check dein Postfach!")
     with t1:
-        l_email = st.text_input("E-Mail", key="log_e")
-        l_pw = st.text_input("Passwort", type="password", key="log_p")
+        l_email = st.text_input("E-Mail", key="l_e")
+        l_pw = st.text_input("Passwort", type="password", key="l_p")
         if st.button("Anmelden"):
-            try:
-                res = supabase.auth.sign_in_with_password({"email": l_email, "password": l_pw})
-                st.session_state.user = res.user
-                st.session_state.user_id = res.user.id
-                st.rerun()
-            except Exception as e:
-                st.error(f"Login fehlgeschlagen: {e}. Hast du die E-Mail bestätigt?")
+            res = supabase.auth.sign_in_with_password({"email": l_email, "password": l_pw})
+            st.session_state.user = res.user
+            st.rerun()
     st.stop()
 
-# --- 4. DASHBOARD ---
-daten = hole_user_profil(st.session_state.user_id)
-ist_premium = daten.get("is_premium", False)
-nutzung = daten.get("text_count", 0)
+# --- 4. HAUPTSEITE ---
+profil = hole_user_profil(st.session_state.user.id)
+nutzung = profil["text_count"]
+ist_premium = profil["is_premium"]
 
-with st.sidebar:
-    st.header("Dein Account")
-    st.write(f"Nutzer: **{st.session_state.user.email}**")
-    st.write("Status: " + ("⭐ PREMIUM" if ist_premium else f"Free-Version ({nutzung}/15)"))
-    
-    if st.button("Abmelden (Logout)"):
-        supabase.auth.sign_out()
-        st.session_state.clear()
-        st.rerun()
+st.title("🛡️ Der Beamten-Roboter")
+st.markdown("### Ich zähme den Amtsschimmel für dich!")
 
-# Paywall-Check
-if not ist_premium and nutzung >= 15:
-    st.warning("Limit erreicht! Hol dir Premium für unbegrenzte Analysen.")
-    paypal_btn = f"""
-        <div id="paypal-button-container"></div>
-        <script src="https://www.paypal.com/sdk/js?client-id={PAYPAL_CLIENT_ID}&currency=EUR"></script>
-        <script>
-            paypal.Buttons({{
-                createOrder: function(data, actions) {{ return actions.order.create({{ purchase_units: [{{ amount: {{ value: '2.00' }} }}] }}); }},
-                onApprove: function(data, actions) {{ return actions.order.capture().then(function() {{ window.location.href = "{APP_URL}?payment=success"; }}); }}
-            }}).render('#paypal-button-container');
-        </script> """
-    st.components.v1.html(paypal_btn, height=500)
-else:
-    # --- 5. HAUPTFUNKTION ---
-    st.title("🛡️ Der Beamten-Roboter")
-    st.write("Ich übersetze kompliziertes Behörden-Deutsch in einfache Sprache.")
-    
-    eingabe = st.text_area("Behördentext hier einfügen:", height=200, placeholder="Füge hier den Text ein, den du nicht verstehst...")
-    
-    if st.button("Analysieren & Kopie per Mail senden"):
-        if not eingabe:
-            st.warning("Bitte gib zuerst einen Text ein.")
-        else:
-            with st.spinner("Roboter arbeitet..."):
-                try:
-                    ki_res = openai_client.chat.completions.create(
-                        model="gpt-4o",
-                        messages=[
-                            {"role": "system", "content": "Du bist ein hilfreicher Roboter. Erkläre Behördentexte so einfach, dass es ein Kind versteht. Nutze klare Bulletpoints."},
-                            {"role": "user", "content": eingabe}
+# Eingabe-Optionen
+tab_text, tab_bild, tab_audio = st.tabs(["📝 Text eingeben", "📸 Foto hochladen", "🎤 Sprache"])
+
+user_input = ""
+image_data = None
+
+with tab_text:
+    user_input = st.text_area("Kopiere den Text hier rein:", height=150)
+
+with tab_bild:
+    uploaded_file = st.file_uploader("Foto vom Brief hochladen", type=["jpg", "png", "jpeg"])
+    if uploaded_file:
+        st.image(uploaded_file, caption="Dein Brief", width=300)
+        image_data = bild_zu_base64(uploaded_file)
+
+with tab_audio:
+    st.write("Diese Funktion nutzt die Spracherkennung deines Geräts.")
+    audio_input = st.text_input("Klicke auf das Mikrofon deiner Tastatur oder tippe hier kurz:")
+
+# --- 5. ANALYSE LOGIK ---
+if st.button("Analyse starten ✨"):
+    if not user_input and not image_data:
+        st.warning("Bitte gib einen Text ein oder lade ein Foto hoch!")
+    elif not ist_premium and nutzung >= 15:
+        st.error("Limit erreicht! Bitte auf Premium upgraden.")
+    else:
+        with st.spinner("Roboter liest und denkt nach..."):
+            try:
+                # System-Anweisung für den "Beamten-Zähmer"
+                system_prompt = """Du bist der 'Beamten-Zähmer'. Deine Aufgabe:
+                1. Erkläre den Inhalt des Textes so einfach, dass es ein 10-Jähriger versteht.
+                2. Sage klar: Was will die Behörde von mir? (Aktion)
+                3. Gibt es eine Frist? Wenn ja, nenne sie fett.
+                4. Antworte humorvoll aber präzise. Nutze Bulletpoints."""
+
+                messages = [{"role": "system", "content": system_prompt}]
+                
+                if image_data:
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "Was steht in diesem Brief? Analysiere ihn."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_data}"}}
                         ]
-                    )
-                    ergebnis = ki_res.choices[0].message.content
-                    
-                    st.subheader("Deine Analyse:")
-                    st.info(ergebnis)
-                    
-                    # Mail-Versand (nimmt die Mail des eingeloggten Users)
-                    mail_erfolg = sende_ergebnis_email(st.session_state.user.email, ergebnis)
-                    if mail_erfolg:
-                        st.success(f"Eine Kopie wurde an {st.session_state.user.email} gesendet!")
-                    
-                    # Zähler in DB erhöhen
-                    neuer_stand = nutzung + 1
-                    supabase.table("profiles").update({"text_count": neuer_stand}).eq("id", st.session_state.user_id).execute()
-                    
-                except Exception as e:
-                    st.error(f"Ein Fehler ist aufgetreten: {e}")
+                    })
+                else:
+                    messages.append({"role": "user", "content": user_input})
+
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o", # gpt-4o kann Bilder sehen!
+                    messages=messages
+                )
+                
+                ergebnis = response.choices[0].message.content
+                st.markdown("---")
+                st.markdown(ergebnis)
+                
+                # Mail & Counter
+                sende_ergebnis_email(st.session_state.user.email, ergebnis)
+                supabase.table("profiles").update({"text_count": nutzung + 1}).eq("id", st.session_state.user.id).execute()
+                st.success("Analyse fertig und per Mail gesendet!")
+                
+            except Exception as e:
+                st.error(f"Fehler: {e}")
+
+# Sidebar für Logout & Status
+with st.sidebar:
+    st.write(f"Nutzer: {st.session_state.user.email}")
+    if st.button("Logout"):
+        st.session_state.user = None
+        st.rerun()
