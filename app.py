@@ -4,102 +4,135 @@ from supabase import create_client, Client
 import smtplib
 from email.message import EmailMessage
 
-# --- 1. SETUP: TRAG HIER DEINE DATEN EIN ---
-# Achtung: Diese Daten vor dem Hochladen auf GitHub löschen!
-OPENAI_API_KEY = "DEIN_OPENAI_KEY"
-SUPABASE_URL = "https://DEINE_ID.supabase.co"
-SUPABASE_KEY = "DEIN_SUPABASE_KEY"
-PAYPAL_CLIENT_ID = "DEINE_PAYPAL_ID"
-APP_URL = "https://deine-app.streamlit.app"
+# --- 1. KONFIGURATION (Lädt alles sicher aus den Streamlit Secrets) ---
+try:
+    # KI & Datenbank Schnittstellen
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+    
+    # PayPal & App Link
+    PAYPAL_CLIENT_ID = st.secrets["PAYPAL_CLIENT_ID"]
+    APP_URL = st.secrets["APP_URL"]
+    
+    # E-Mail Account des Roboters (für den Versand)
+    SMTP_SERVER = st.secrets["SMTP_SERVER"]
+    SMTP_PORT = 465
+    SMTP_USER = st.secrets["SMTP_USER"]
+    SMTP_PASSWORD = st.secrets["SMTP_PASSWORD"]
+except Exception:
+    st.error("Fehler: Secrets nicht konfiguriert! Bitte Keys in Streamlit Cloud eintragen.")
+    st.stop()
 
-# Deine E-Mail Daten (für den Versand der Ergebnisse)
-SMTP_SERVER = "smtp.gmx.net" # oder smtp.web.de etc.
-SMTP_PORT = 465
-SMTP_USER = "deine-mail@gmx.de"
-SMTP_PASSWORD = "dein-app-passwort"
-
-# Clients starten
+# Initialisierung der Dienste
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- 2. FUNKTIONEN ---
+# --- 2. KERN-FUNKTIONEN ---
 
-def sende_bescheid_mail(user_email, inhalt):
+def sende_ergebnis_email(ziel_email, inhalt):
+    """Verschickt die KI-Analyse als offizielle E-Mail."""
     try:
         msg = EmailMessage()
         msg.set_content(f"Amtsschimmel-Zähmer Analyse:\n\n{inhalt}")
-        msg['Subject'] = "Dein Behörden-Bescheid"
+        msg['Subject'] = "Dein Behörden-Bescheid (Ergebnis)"
         msg['From'] = SMTP_USER
-        msg['To'] = user_email
+        msg['To'] = ziel_email
         with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.send_message(msg)
         return True
-    except Exception as e:
-        st.error(f"Mail-Fehler: {e}")
+    except:
         return False
 
-def get_user_stats(user_id):
+def hole_user_profil(user_id):
+    """Sucht den User in der Datenbank oder legt ihn neu an."""
     res = supabase.table("profiles").select("*").eq("id", user_id).execute()
     if len(res.data) == 0:
-        new_user = {"id": user_id, "text_count": 0, "image_count": 0, "is_premium": False}
-        supabase.table("profiles").insert(new_user).execute()
-        return new_user
+        neu = {"id": user_id, "text_count": 0, "is_premium": False}
+        supabase.table("profiles").insert(neu).execute()
+        return neu
     return res.data[0]
 
-# --- 3. LOGIN & REGISTRIERUNG ---
+# --- 3. LOGIN & REGISTRIERUNG (Alle E-Mails) ---
 if "user" not in st.session_state:
     st.session_state.user = None
 
+# PayPal Rückleitung prüfen
+if st.query_params.get("payment") == "success" and st.session_state.get("user_id"):
+    supabase.table("profiles").update({"is_premium": True}).eq("id", st.session_state.user_id).execute()
+    st.success("Premium aktiviert! 🎉")
+
 if not st.session_state.user:
-    st.title("🛡️ Beamten-Roboter Login")
-    t1, t2 = st.tabs(["Login", "Registrieren"])
+    st.title("🛡️ Beamten-Roboter: Zugang")
+    t1, t2 = st.tabs(["Login", "Konto erstellen"])
     
     with t2:
-        reg_mail = st.text_input("E-Mail")
-        reg_pw = st.text_input("Passwort", type="password", key="r_pw")
-        if st.button("Konto erstellen"):
-            supabase.auth.sign_up({"email": reg_mail, "password": reg_pw})
-            st.info("Bestätigungs-Mail gesendet!")
-            
+        r_email = st.text_input("E-Mail Adresse")
+        r_pw = st.text_input("Passwort", type="password", key="reg")
+        if st.button("Jetzt Registrieren"):
+            supabase.auth.sign_up({"email": r_email, "password": r_pw})
+            st.info("Bestätigungs-Mail verschickt! Link klicken, dann einloggen.")
+
     with t1:
-        log_mail = st.text_input("E-Mail", key="l_m")
-        log_pw = st.text_input("Passwort", type="password", key="l_p")
-        if st.button("Einloggen"):
-            res = supabase.auth.sign_in_with_password({"email": log_mail, "password": log_pw})
-            st.session_state.user = res.user
-            st.session_state.user_id = res.user.id
-            st.rerun()
+        l_email = st.text_input("E-Mail", key="log_e")
+        l_pw = st.text_input("Passwort", type="password", key="log_p")
+        if st.button("Anmelden"):
+            try:
+                res = supabase.auth.sign_in_with_password({"email": l_email, "password": l_pw})
+                st.session_state.user = res.user
+                st.session_state.user_id = res.user.id
+                st.rerun()
+            except:
+                st.error("Fehler beim Login.")
     st.stop()
 
-# --- 4. HAUPTTEIL ---
+# --- 4. DASHBOARD & PAYWALL ---
 user_id = st.session_state.user_id
-stats = get_user_stats(user_id)
-is_premium = stats["is_premium"]
-nutzung = stats["text_count"] + stats["image_count"]
+daten = hole_user_profil(user_id)
+ist_premium = daten["is_premium"]
+nutzung = daten["text_count"]
 
-# Paywall (2€ via PayPal)
-if not is_premium and nutzung >= 15:
-    st.warning("Limit erreicht! Schalte Premium frei.")
-    # Hier der PayPal Button (HTML/JS)
-    st.write("PayPal Button hier...") 
+with st.sidebar:
+    st.write(f"Konto: {st.session_state.user.email}")
+    st.write("Status: " + ("PREMIUM ✨" if ist_premium else f"Free: {nutzung}/15"))
+    if st.button("Logout"):
+        supabase.auth.sign_out()
+        st.session_state.user = None
+        st.rerun()
+
+if not ist_premium and nutzung >= 15:
+    st.warning("Limit erreicht! Schalte unbegrenzte Nutzung für 2€ frei.")
+    paypal_btn = f"""
+        <div id="paypal-button-container"></div>
+        <script src="https://www.paypal.com/sdk/js?client-id={PAYPAL_CLIENT_ID}&currency=EUR"></script>
+        <script>
+            paypal.Buttons({{
+                createOrder: function(data, actions) {{ return actions.order.create({{ purchase_units: [{{ amount: {{ value: '2.00' }} }}] }}); }},
+                onApprove: function(data, actions) {{ return actions.order.capture().then(function() {{ window.location.href = "{APP_URL}?payment=success"; }}); }}
+            }}).render('#paypal-button-container');
+        </script> """
+    st.components.v1.html(paypal_btn, height=500)
 else:
+    # --- 5. HAUPTFUNKTION ---
     st.title("🛡️ Der Beamten-Roboter")
-    txt = st.text_area("Behördentext:")
+    eingabe = st.text_area("Behördentext hier einfügen:")
     
-    if st.button("Analysieren"):
-        if txt:
-            # KI Analyse
-            resp = openai_client.chat.completions.create(
-                model="gpt-4o",
-                messages=[{"role": "user", "content": f"Erklär das einfach: {txt}"}]
-            )
-            antwort = resp.choices[0].message.content
-            st.success(antwort)
-            
-            # Mail senden
-            sende_bescheid_mail(st.session_state.user.email, antwort)
-            
-            # Counter hochsetzen
-            new_count = stats["text_count"] + 1
-            supabase.table("profiles").update({"text_count": new_count}).eq("id", user_id).execute()
+    if st.button("Analysieren & Bescheid senden"):
+        if eingabe:
+            with st.spinner("Analysiere..."):
+                # KI Antwort generieren
+                ki_res = openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=[{"role": "system", "content": "Du bist ein Beamten-Roboter. Erkläre Behördentexte extrem einfach."},
+                              {"role": "user", "content": eingabe}]
+                )
+                ergebnis = ki_res.choices[0].message.content
+                st.info(ergebnis)
+                
+                # E-Mail senden
+                if sende_ergebnis_email(st.session_state.user.email, ergebnis):
+                    st.success("Ergebnis wurde auch per E-Mail gesendet!")
+                
+                # Zähler in Datenbank erhöhen
+                supabase.table("profiles").update({"text_count": nutzung + 1}).eq("id", user_id).execute()
