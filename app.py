@@ -2,6 +2,7 @@ import streamlit as st
 from openai import OpenAI
 import base64
 import io
+from streamlit_mic_recorder import mic_recorder # WICHTIG: Muss in requirements.txt
 
 # --- 1. SETUP & PASSWORT ---
 st.set_page_config(page_title="Beamten-Zähmer V3", layout="centered")
@@ -35,71 +36,87 @@ except Exception as e:
 def bild_zu_base64(datei):
     return base64.b64encode(datei.read()).decode('utf-8')
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_bytes):
     try:
+        # Erstellt ein Datei-ähnliches Objekt aus den Bytes für die API
+        audio_file = io.BytesIO(audio_bytes)
+        audio_file.name = "input.mp3"
         response = openai_client.audio.transcriptions.create(
             model="whisper-1", file=audio_file, response_format="text"
         )
         return response
-    except:
+    except Exception as e:
+        st.error(f"Fehler bei der Spracherkennung: {e}")
         return None
 
 # --- 4. DIE APP ---
 st.title("🛡️ Der Beamten-Zähmer")
 
 with st.sidebar:
-    st.header("Brief-Upload & Sprache")
+    st.header("Brief & Sprache")
     foto = st.file_uploader("Foto vom Brief", type=["jpg", "png", "jpeg"])
-    audio_upload = st.file_uploader("Sprachnachricht", type=["mp3", "wav", "m4a"])
+    
+    st.write("### Sprache aufnehmen")
+    # Das echte Mikrofon-Tool
+    audio_record = mic_recorder(
+        start_prompt="🎤 Aufnahme starten",
+        stop_prompt="🛑 Stopp & Senden",
+        key='recorder'
+    )
+    
     st.divider()
-    if st.button("Abmelden"):
-        st.session_state.authenticated = False
-        st.rerun()
     if st.button("Neuer Brief / Chat löschen"):
-        st.session_state.messages = []
-        st.session_state.transcribed_text = None
+        for key in list(st.session_state.keys()):
+            if key != "authenticated":
+                del st.session_state[key]
         st.rerun()
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
-if "transcribed_text" not in st.session_state:
-    st.session_state.transcribed_text = None
 
-if audio_upload and st.session_state.transcribed_text is None:
-    audio_bytes = io.BytesIO(audio_upload.getvalue())
-    audio_bytes.name = audio_upload.name
-    st.session_state.transcribed_text = transcribe_audio(audio_bytes)
+# Mikrofon-Aufnahme verarbeiten
+if audio_record and "last_audio_id" not in st.session_state or (audio_record and st.session_state.get("last_audio_id") != audio_record['id']):
+    with st.spinner("Ich höre zu..."):
+        text = transcribe_audio(audio_record['bytes'])
+        if text:
+            st.session_state.transcribed_input = text
+            st.session_state.last_audio_id = audio_record['id']
 
 # Verlauf anzeigen
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-prompt = st.chat_input("Was willst du wissen?", value=st.session_state.transcribed_text if st.session_state.transcribed_text else "")
+prompt = st.chat_input("Was willst du wissen?")
 
-if prompt and st.session_state.transcribed_text:
-    st.session_state.transcribed_text = None
+# Audio-Text als Prompt nutzen
+if "transcribed_input" in st.session_state:
+    prompt = st.session_state.transcribed_input
+    del st.session_state.transcribed_input
 
 if prompt or (foto and "foto_verarbeitet" not in st.session_state):
-    # SYSTEM PROMPT MIT DEINEN REGELN
+    
     system_prompt = """
     Du bist der 'Beamten-Zähmer'. Ein menschlicher Ratgeber für Behörden-Kram.
     
+    DEINE GRENZEN:
+    - Antworte NUR auf Fragen zu Behörden, Briefen, Gesetzen oder Anträgen.
+    - Wenn der User etwas anderes fragt, sag höflich: 'Verzeiht, edler Fragesteller, doch meine Expertise liegt allein im Reiche der Paragraphen.'
+
     REGELN FÜR DIE ANALYSE:
-    1. Wenn ein NEUES BILD oder ein langer Text zur Analyse kommt, antworte SOFORT mit Bulletpoints:
-       - **Was ist los?** (Kurz erklären, worum es geht)
-       - **Forderung:** (Was wollen die genau von mir?)
-       - **Frist:** (Bis wann muss das erledigt sein? Datum **FETT** markieren)
+    1. Wenn ein NEUES BILD kommt, antworte SOFORT mit dieser Struktur:
+       - **Was ist los?**: (Kurze Erklärung)
+       - **Forderung**: (Was genau muss getan werden?)
+       - **Frist**: (Datum **FETT**)
     
-    REGELN FÜR DEN CHAT DANACH:
-    2. In der weiteren Unterhaltung verhältst du dich wie ein natürlicher Mensch.
-    3. Antworte DIREKT auf Fragen. Wenn der User fragt 'Soll ich das machen?', sag ja/nein mit Begründung. 
-    4. Wiederhole NICHT den Inhalt des Briefes, wenn nicht danach gefragt wurde.
-    5. Keine Roboter-Floskeln. Bleib strikt beim Thema Behörden/Beamte.
+    REGELN FÜR DEN CHAT:
+    2. Sei kein Bot. Antworte direkt wie ein Mensch.
+    3. Wenn der User eine Zusammenfassung will, nutze Bulletpoints.
+    4. Wenn eine normale Frage kommt, antworte im Text ohne den Brief zu wiederholen.
     """
 
     with st.chat_message("user"):
-        anzeige = prompt if prompt else "Hier ist ein Foto meines Briefes zur Analyse."
+        anzeige = prompt if prompt else "Hier ist mein Brief zur Analyse."
         st.markdown(anzeige)
     st.session_state.messages.append({"role": "user", "content": anzeige})
 
@@ -107,11 +124,9 @@ if prompt or (foto and "foto_verarbeitet" not in st.session_state):
         with st.spinner("Zähme Paragraphen..."):
             msgs = [{"role": "system", "content": system_prompt}] + st.session_state.messages
             
-            # Falls ein Bild dabei ist, speziell aufbereiten
             if foto and "foto_verarbeitet" not in st.session_state:
                 foto.seek(0)
                 b64 = bild_zu_base64(foto)
-                # Die letzte Nachricht im Verlauf durch Bild-Inhalt ersetzen/ergänzen
                 msgs[-1] = {
                     "role": "user", 
                     "content": [
@@ -129,6 +144,5 @@ if prompt or (foto and "foto_verarbeitet" not in st.session_state):
             except Exception as e:
                 st.error(f"KI-Fehler: {e}")
 
-# Falls ein neues Foto hochgeladen wird, Reset für das nächste Mal
 if not foto and "foto_verarbeitet" in st.session_state:
     del st.session_state.foto_verarbeitet
